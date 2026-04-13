@@ -9,9 +9,9 @@
 </p>
 
 <p align="center">
-  <img alt="PyPI version" src="https://img.shields.io/pypi/v/pdfmark-ai?color=blue"/>
-  <img alt="Python" src="https://img.shields.io/pypi/pyversions/pdfmark-ai"/>
-  <img alt="License" src="https://img.shields.io/pypi/l/pdfmark-ai"/>
+  <img alt="PyPI version" src="https://img.shields.io/pypi/v/pdfmark-ai?color=blue&kill_cache=1"/>
+  <img alt="Python" src="https://img.shields.io/pypi/pyversions/pdfmark-ai?kill_cache=1"/>
+  <img alt="License" src="https://img.shields.io/pypi/l/pdfmark-ai?kill_cache=1"/>
   <img alt="GitHub commit activity" src="https://img.shields.io/github/commit-activity/m/axzml/pdfmark-ai"/>
 </p>
 
