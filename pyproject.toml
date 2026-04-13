@@ -1,0 +1,53 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pdfmark-ai"
+version = "0.3.0"
+description = "Convert PDF files to high-quality Markdown using LLM vision models"
+requires-python = ">=3.10"
+license = "MIT"
+keywords = ["pdf", "markdown", "llm", "vision", "ocr", "document-processing"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Text Processing :: Markup",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = [
+    "PyMuPDF>=1.25.0",
+    "anthropic>=0.40.0",
+    "typer>=0.12.0",
+    "rich>=13.0.0",
+    "pydantic>=2.0.0",
+    "Pillow>=10.0.0",
+    "tomli>=2.0.0; python_version<'3.11'",
+    "python-dotenv>=1.0.0",
+    "openai>=1.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.23.0",
+    "pytest-mock>=3.12.0",
+]
+
+[project.scripts]
+pdfmark = "pdfmark_ai.cli:app"
+
+[project.urls]
+Homepage = "https://github.com/axzml/pdfmark-ai"
+Repository = "https://github.com/axzml/pdfmark-ai"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.setuptools.packages.find]
+include = ["pdfmark_ai*"]

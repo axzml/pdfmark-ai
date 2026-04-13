@@ -1,0 +1,67 @@
+# pdfmark Configuration
+# =====================
+# Non-sensitive defaults (safe to commit).
+# Secrets (API keys) go in .env file.
+
+# Active provider preset: "kimi" (default), "xiaomi", "qwen", or "anthropic"
+# This selects [providers.<name>] as the default LLM settings.
+# Environment variables (LLM_API_KEY, LLM_BASE_URL, LLM_MODEL) override these.
+active_provider = "kimi"
+
+# --- Provider presets ---
+
+[providers.anthropic]
+base_url = "https://api.anthropic.com"
+model = "claude-sonnet-4-20250514"
+auth_type = "api_key"
+sdk_type = "anthropic"
+timeout = 300
+max_concurrent = 5
+
+[providers.kimi]
+base_url = "https://api.kimi.com/coding"
+model = "kimi-for-coding"
+auth_type = "api_key"
+sdk_type = "anthropic"
+timeout = 300
+max_concurrent = 5
+
+[providers.xiaomi]
+base_url = "https://token-plan-cn.xiaomimimo.com/anthropic"
+model = "mimo-v2-omni"
+auth_type = "auth_token"
+sdk_type = "anthropic"
+timeout = 300
+max_concurrent = 5
+
+[providers.qwen]
+base_url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+model = "qwen3.6-plus"
+sdk_type = "openai"
+timeout = 300
+max_concurrent = 3
+
+# --- Rendering ---
+
+[render]
+dpi = 150
+
+# --- Chunking ---
+
+[chunk]
+max_pages = 4
+window_size = 2
+window_overlap = 1
+
+# --- Output ---
+
+[output]
+language = "auto"
+refine = false
+frontmatter = true
+
+# --- Cache ---
+
+[cache]
+enabled = true
+dir = "~/.cache/pdfmark"

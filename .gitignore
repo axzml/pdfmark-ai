@@ -1,0 +1,13 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.env
+.venv/
+*.egg
+.pytest_cache/
+images/
+*.pdf
+test_output_*.md
+.omc/
