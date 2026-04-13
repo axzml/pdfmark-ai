@@ -4,8 +4,9 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pdfmark-ai"
-version = "0.3.0"
+version = "0.3.1"
 description = "Convert PDF files to high-quality Markdown using LLM vision models"
+readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"
 keywords = ["pdf", "markdown", "llm", "vision", "ocr", "document-processing"]
