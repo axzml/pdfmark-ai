@@ -207,6 +207,7 @@ def crop_figures_for_pages(
     pdf_hash: str,
     dpi: int = 150,
     min_dim: int = MIN_IMAGE_DIM,
+    clean_dir: bool = True,
 ) -> dict[int, list[CroppedImage]]:
     """Crop figures from specific pages using PyMuPDF embedded image detection.
 
@@ -233,7 +234,7 @@ def crop_figures_for_pages(
     page_images: dict[int, list[CroppedImage]] = {}
 
     images_dir = output_dir / "images" / pdf_hash
-    if images_dir.exists():
+    if clean_dir and images_dir.exists():
         shutil.rmtree(images_dir)
     images_dir.mkdir(parents=True, exist_ok=True)
 
@@ -304,6 +305,15 @@ def crop_figures_for_pages(
 FIGURE_PATTERN = re.compile(r"\{\{FIGURE:page_(\d+)\}\}|\{\{FIGURE:(\d+)\}\}")
 FIGURE_IMG_PATTERN = re.compile(r"!\[[^\]]*\]\(\{\{FIGURE:page_\d+\}\}\)|!\[[^\]]*\]\(\{\{FIGURE:\d+\}\}\)")
 
+# Pattern for figure captions (standalone, not inline references)
+_FIGURE_CAPTION_RE = re.compile(
+    r"^\s*\*\*(?:Figure|Fig\.?)\s*\d+[.:][^\n]*$",
+    re.MULTILINE,
+)
+
+# Pattern for page range annotations
+_PAGE_ANNOTATION_RE = re.compile(r"<!--\s*pages:\s*(\d+)-(\d+)\s*-->")
+
 
 def collect_figure_pages(markdown: str) -> set[int]:
     """Parse markdown for {{FIGURE:N}} placeholders and return unique page numbers."""
@@ -335,3 +345,250 @@ def replace_figure_placeholders(
         return match.group(0)
 
     return FIGURE_PATTERN.sub(_replace, markdown)
+
+
+def _find_page_for_position(
+    position: int,
+    coverage: list[tuple[int, int, int, int]],
+) -> tuple[int, int] | None:
+    """Find (page_start, page_end) for a position using annotation coverage map."""
+    for rng_start, rng_end, ps, pe in coverage:
+        if rng_start <= position < rng_end:
+            return (ps, pe)
+    return None
+
+
+_FIGURE_NUM_RE = re.compile(r"\*\*(?:Figure|Fig\.?)\s*(\d+)")
+
+# Minimum gap (PDF points) between text blocks to consider as the
+# body-text / figure boundary.  The largest gap above a caption is
+# typically where body text ends and figure labels begin.
+_BOUNDARY_GAP = 30
+
+
+def _crop_vector_figure(
+    page_num: int,
+    page_image_bytes: bytes,
+    pdf_path: Path,
+    zoom: float,
+    figure_num: int | None = None,
+    min_dim: int = MIN_IMAGE_DIM,
+) -> bytes | None:
+    """Crop a vector-figure region from a rendered page using caption position.
+
+    For pages where figures are vector graphics (not embedded bitmaps),
+    locates the ``Figure N:`` caption text block via PyMuPDF, then finds
+    the largest gap between text blocks above the caption to determine
+    where body text ends and figure content begins.
+    """
+    doc = fitz.open(str(pdf_path))
+    page = doc[page_num - 1]
+    blocks = page.get_text("blocks")
+
+    # Find matching caption text blocks
+    caption_rects: list[tuple[float, float, float, float]] = []
+    for b in blocks:
+        if b[6] != 0:
+            continue
+        text = b[4].strip()
+        m = re.match(r"Figure\s+\d+", text)
+        if not m:
+            continue
+        if figure_num is not None:
+            found_num = int(re.search(r"\d+", text).group())
+            if found_num != figure_num:
+                continue
+        caption_rects.append((b[0], b[1], b[2], b[3]))
+
+    if not caption_rects:
+        doc.close()
+        return None
+
+    # Collect all text blocks above the caption, sorted by position
+    cap_y0 = min(r[1] for r in caption_rects)
+    blocks_above = sorted(
+        [(b[1], b[3], b[4]) for b in blocks if b[6] == 0 and b[3] <= cap_y0],
+        key=lambda t: t[0],
+    )
+
+    # Find the top boundary of the figure using the largest gap between
+    # consecutive text blocks above the caption.  The largest gap is
+    # typically where body text ends and figure labels begin.
+    fig_top_pdf = 0.0  # default: top of page content
+    if blocks_above:
+        gaps: list[tuple[float, float]] = []
+        # Gap from page top to the first block
+        gaps.append((0.0, blocks_above[0][0]))
+        for i in range(1, len(blocks_above)):
+            gap_top = blocks_above[i - 1][1]
+            gap_bottom = blocks_above[i][0]
+            if gap_bottom > gap_top:
+                gaps.append((gap_top, gap_bottom))
+        # Pick the position just below the largest gap
+        max_gap_size = 0.0
+        for g_top, g_bottom in gaps:
+            if g_bottom - g_top > max_gap_size:
+                max_gap_size = g_bottom - g_top
+                fig_top_pdf = g_top
+
+    # Bottom boundary: caption top
+    fig_bottom_pdf = cap_y0
+
+    doc.close()
+
+    fig_top_px = int(fig_top_pdf * zoom)
+    fig_bottom_px = int(fig_bottom_pdf * zoom)
+    fig_height = fig_bottom_px - fig_top_px
+
+    if fig_height < min_dim:
+        return None
+
+    img = Image.open(io.BytesIO(page_image_bytes))
+    page_w = img.size[0]
+
+    cropped = _crop_from_bytes(page_image_bytes, 0, fig_top_px, page_w, fig_height)
+    if cropped and not _is_blank(cropped):
+        return cropped
+
+    return None
+
+
+def scan_and_insert_missed_figures(
+    markdown: str,
+    pdf_path: Path,
+    pages: list[PageImage],
+    output_dir: Path,
+    pdf_hash: str,
+    dpi: int = 150,
+    existing_page_images: dict[int, list[CroppedImage]] | None = None,
+) -> tuple[str, dict[int, list[CroppedImage]]]:
+    """Scan for figure captions without image links and insert cropped figures.
+
+    Fallback for when the LLM misses {{FIGURE:N}} placeholders. Finds
+    ``**Figure N:**`` captions, determines their PDF page ranges via
+    ``<!-- pages: x-y -->`` annotations, crops embedded images, and inserts
+    image links before each caption.
+    """
+    existing = existing_page_images or {}
+
+    # Build page-range coverage from annotations
+    annotations = sorted(
+        (m.start(), int(m.group(1)), int(m.group(2)))
+        for m in _PAGE_ANNOTATION_RE.finditer(markdown)
+    )
+    coverage: list[tuple[int, int, int, int]] = []
+    for i, (pos, ps, pe) in enumerate(annotations):
+        end = annotations[i + 1][0] if i + 1 < len(annotations) else len(markdown)
+        coverage.append((pos, end, ps, pe))
+
+    if not coverage:
+        return markdown, existing
+
+    # Find captions without a preceding image link
+    missed: list[tuple[int, int, str, int, int]] = []
+    for m in _FIGURE_CAPTION_RE.finditer(markdown):
+        cap_start = m.start()
+        cap_text = m.group(0).strip()
+        preceding = markdown[max(0, cap_start - 500):cap_start]
+        lines = [l.strip() for l in preceding.split("\n") if l.strip()]
+        has_image = any(
+            l.startswith("![") and "](" in l and "images/" in l
+            for l in lines[-5:]
+        )
+        if not has_image:
+            rng = _find_page_for_position(cap_start, coverage)
+            if rng:
+                missed.append((cap_start, m.end(), cap_text, rng[0], rng[1]))
+
+    if not missed:
+        return markdown, existing
+
+    # Determine pages to crop (exclude already-cropped pages)
+    pages_to_crop: set[int] = set()
+    for _, _, _, ps, pe in missed:
+        pages_to_crop.update(range(ps, pe + 1))
+    pages_to_crop -= set(existing.keys())
+
+    all_images = dict(existing)
+    if pages_to_crop:
+        new_images = crop_figures_for_pages(
+            pdf_path=pdf_path,
+            pages=pages,
+            page_numbers=pages_to_crop,
+            output_dir=output_dir,
+            pdf_hash=pdf_hash,
+            dpi=dpi,
+            clean_dir=False,
+        )
+        for pn, imgs in new_images.items():
+            all_images.setdefault(pn, []).extend(imgs)
+
+    # Phase 2: Vector-graphics fallback — crop from rendered pages using
+    # caption position for pages that still have no images
+    zoom = dpi / 72.0
+    page_byte_map = {p.page_number: p.image_bytes for p in pages}
+    images_dir = output_dir / "images" / pdf_hash
+    images_dir.mkdir(parents=True, exist_ok=True)
+
+    for cap_start, cap_end, cap_text, ps, pe in missed:
+        # Check if we already have an image for any page in range
+        if any(all_images.get(p) for p in range(ps, pe + 1)):
+            continue
+
+        # Extract figure number for targeted search
+        num_match = _FIGURE_NUM_RE.search(cap_text)
+        figure_num = int(num_match.group(1)) if num_match else None
+
+        cropped_bytes = None
+        for p in range(ps, pe + 1):
+            pb = page_byte_map.get(p)
+            if pb is None:
+                continue
+            cropped_bytes = _crop_vector_figure(
+                page_num=p,
+                page_image_bytes=pb,
+                pdf_path=pdf_path,
+                zoom=zoom,
+                figure_num=figure_num,
+            )
+            if cropped_bytes:
+                save_page = p
+                break
+
+        if cropped_bytes:
+            idx = len(all_images.get(save_page, []))
+            filename = f"page_{save_page}_img_{idx}.png"
+            filepath = images_dir / filename
+            filepath.write_bytes(cropped_bytes)
+            relative_path = f"images/{pdf_hash}/{filename}"
+            cropped = CroppedImage(
+                page_number=save_page,
+                index=idx,
+                width=0,
+                height=0,
+                image_bytes=cropped_bytes,
+                relative_path=relative_path,
+            )
+            all_images.setdefault(save_page, []).append(cropped)
+
+    # Insert image links before captions (reverse to preserve positions)
+    page_img_counter: dict[int, int] = {}
+    for cap_start, _, cap_text, ps, pe in reversed(missed):
+        for p in range(ps, pe + 1):
+            imgs = all_images.get(p, [])
+            idx = page_img_counter.get(p, 0)
+            if idx < len(imgs):
+                alt = cap_text.replace("**", "").strip()
+                if ". " in alt:
+                    alt = alt[:alt.index(". ") + 1]
+                img_path = f"./{imgs[idx].relative_path}"
+                markdown = markdown[:cap_start] + f"![{alt}]({img_path})\n" + markdown[cap_start:]
+                page_img_counter[p] = idx + 1
+                break
+
+    new_count = sum(len(v) for v in all_images.values()) - sum(len(v) for v in existing.values())
+    logger.info(
+        "Fallback scan: cropped %d images for %d missed captions",
+        new_count, len(missed),
+    )
+    return markdown, all_images

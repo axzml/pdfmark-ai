@@ -40,6 +40,7 @@ from pdfmark_ai.image_extractor import (
     collect_figure_pages,
     crop_figures_for_pages,
     replace_figure_placeholders,
+    scan_and_insert_missed_figures,
 )
 
 app = typer.Typer(
@@ -431,11 +432,14 @@ async def _run(
 
         # Stage 5.5: Crop figures if --crop_images
         if cli_args.get("crop_images", False):
+            output_dir = output_path.parent
+            pdf_hash = get_pdf_hash(input_path)
+
+            # Phase 1: LLM-marked figures
             figure_pages = collect_figure_pages(markdown)
+            page_images: dict = {}
             if figure_pages:
-                progress.add_task("Cropping figure regions...", total=None)
-                output_dir = output_path.parent
-                pdf_hash = get_pdf_hash(input_path)
+                progress.add_task("Cropping LLM-marked figures...", total=None)
                 page_images = crop_figures_for_pages(
                     pdf_path=input_path,
                     pages=pages,
@@ -444,17 +448,35 @@ async def _run(
                     pdf_hash=pdf_hash,
                     dpi=cfg["dpi"],
                 )
-                total_imgs = sum(len(imgs) for imgs in page_images.values())
                 markdown = replace_figure_placeholders(markdown, page_images)
-                # Strip any leftover ![...](\{\{FIGURE:N\}\}) from chunk overlap duplicates
-                markdown = FIGURE_IMG_PATTERN.sub("", markdown)
+
+            # Strip leftover placeholder syntax
+            markdown = FIGURE_IMG_PATTERN.sub("", markdown)
+
+            # Phase 2: Fallback for missed figure captions
+            progress.add_task("Scanning for missed figures...", total=None)
+            markdown, all_images = scan_and_insert_missed_figures(
+                markdown=markdown,
+                pdf_path=input_path,
+                pages=pages,
+                output_dir=output_dir,
+                pdf_hash=pdf_hash,
+                dpi=cfg["dpi"],
+                existing_page_images=page_images,
+            )
+
+            total_imgs = sum(len(imgs) for imgs in all_images.values())
+            fallback_count = total_imgs - sum(len(imgs) for imgs in page_images.values())
+
+            console.print(
+                f"  Cropped [bold green]{total_imgs}[/bold green] figure regions."
+                if total_imgs
+                else "  No figures detected."
+            )
+            if fallback_count > 0:
                 console.print(
-                    f"  Cropped [bold green]{total_imgs}[/bold green] figure regions."
-                    if total_imgs
-                    else "  No figures detected by LLM."
+                    f"  (fallback recovered [bold green]{fallback_count}[/bold green] missed)"
                 )
-            else:
-                console.print("  No figure placeholders found in output.")
         else:
             # Strip any ![...](\{\{FIGURE:N\}\}) placeholders when crop mode is off
             markdown = FIGURE_IMG_PATTERN.sub("", markdown)
