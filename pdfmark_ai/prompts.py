@@ -40,25 +40,35 @@ EXTRACTION_SYSTEM = """You are a precise document converter. Convert PDF page im
 
 Rules:
 - Preserve heading hierarchy (# ## ### etc.)
-- Use Markdown tables for tabular data
 - Use fenced code blocks with language tags
 - Use LaTeX for math: $inline$ and $$block$$
 - Strip headers, footers, page numbers, watermarks
-- Linearize dual-column layouts (left column first)
+- Linearize dual-column body text (left column first)
+- For author/affiliation blocks, render as a compact Markdown table with no empty cells: group authors by row as they appear in the paper, with name (with markers), affiliation, and email as columns. Do NOT use empty cells for spacing between rows or to align columns.
 - Include <!-- pages: x-y --> annotation at the start
 - Do NOT wrap output in markdown code fences
 - Output Markdown ONLY, no explanations
 
+Table handling:
+- ALWAYS render tables as Markdown tables using | syntax, regardless of complexity
+- Include the table caption above the table, e.g.: **Table 1:** Description here.
+- For empty cells in complex tables, leave them blank (empty space between | delimiters)
+- Do NOT use {{FIGURE:N}} for tables — that placeholder is reserved for images and diagrams only
+
 Image handling:
-- If a figure manifest is provided (between "--- Available Figures ---" markers), use the EXACT placeholder format shown, e.g. ![brief description]({{IMG:3:0}})
-- Place the image placeholder at the appropriate location in the document flow
-- If no manifest is provided, use ![description](figure-N) as a generic placeholder"""
+- When you see a figure, chart, diagram, or illustration in the page, insert: ![description]({{FIGURE:N}})
+- Replace N with the actual 1-indexed page number (e.g. {{FIGURE:3}} for page 3)
+- Place it at the position where the figure appears in the document flow
+- Include a brief description in the alt text (e.g. the figure caption or title)
+- IMPORTANT: Also output the figure caption as plain text on the line below the image, e.g.:
+  ![The Transformer]({{FIGURE:3}})
+  **Figure 1:** The Transformer - model architecture.
+- Do NOT omit the caption text — it must appear in the markdown output"""
 
 
 def build_extraction_prompt(
     chunk: Chunk,
     structure: DocumentStructure,
-    image_manifest: str = "",
 ) -> str:
     """Build the extraction prompt for a single chunk."""
     parts = [
@@ -73,9 +83,6 @@ def build_extraction_prompt(
             f"{chunk.context}\n"
             "--- End context ---"
         )
-
-    if image_manifest:
-        parts.append(image_manifest)
 
     parts.append(LANG_MAP.get(structure.language, LANG_MAP["auto"]))
     parts.append("\nConvert these page images to Markdown:")

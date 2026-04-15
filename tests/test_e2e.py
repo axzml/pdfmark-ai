@@ -43,36 +43,35 @@ class TestE2E:
         )
 
         with patch("pdfmark_ai.cli.render_pdf", return_value=pages):
-            with patch("pdfmark_ai.cli.extract_images", return_value={}):
-                with patch("pdfmark_ai.cli.detect_structure", return_value=structure):
-                    with patch("pdfmark_ai.cli.build_chunks") as mock_build:
-                        from pdfmark_ai.models import Chunk
-                        chunks = [
-                            Chunk(
+            with patch("pdfmark_ai.cli.detect_structure", return_value=structure):
+                with patch("pdfmark_ai.cli.build_chunks") as mock_build:
+                    from pdfmark_ai.models import Chunk
+                    chunks = [
+                        Chunk(
+                            chunk_id=0,
+                            section_title="",
+                            pages=pages[:2],
+                            start_page=1,
+                            end_page=2,
+                        )
+                    ]
+                    mock_build.return_value = chunks
+
+                    with patch("pdfmark_ai.cli.process_all_chunks") as mock_extract:
+                        from pdfmark_ai.models import ExtractionResult
+                        mock_extract.return_value = [
+                            ExtractionResult(
                                 chunk_id=0,
-                                section_title="",
-                                pages=pages[:2],
                                 start_page=1,
                                 end_page=2,
+                                section_title="",
+                                markdown="# Hello\n\nWorld",
+                                tail_summary="World",
                             )
                         ]
-                        mock_build.return_value = chunks
 
-                        with patch("pdfmark_ai.cli.process_all_chunks") as mock_extract:
-                            from pdfmark_ai.models import ExtractionResult
-                            mock_extract.return_value = [
-                                ExtractionResult(
-                                    chunk_id=0,
-                                    start_page=1,
-                                    end_page=2,
-                                    section_title="",
-                                    markdown="# Hello\n\nWorld",
-                                    tail_summary="World",
-                                )
-                            ]
-
-                            with patch("pdfmark_ai.cli.merge_results", return_value="# Hello\n\nWorld"):
-                                await _run(pdf_path, output_path, cli_args, detect_only=False)
+                        with patch("pdfmark_ai.cli.merge_results", return_value="# Hello\n\nWorld"):
+                            await _run(pdf_path, output_path, cli_args, detect_only=False)
 
         assert output_path.exists()
         content = output_path.read_text(encoding="utf-8")
@@ -96,12 +95,11 @@ class TestE2E:
         )
 
         with patch("pdfmark_ai.cli.render_pdf", return_value=pages):
-            with patch("pdfmark_ai.cli.extract_images", return_value={}):
-                with patch("pdfmark_ai.cli.detect_structure", return_value=structure):
-                    with patch("pdfmark_ai.cli.LLMClient") as MockClient:
-                        mock_instance = MagicMock()
-                        MockClient.return_value = mock_instance
+            with patch("pdfmark_ai.cli.detect_structure", return_value=structure):
+                with patch("pdfmark_ai.cli.LLMClient") as MockClient:
+                    mock_instance = MagicMock()
+                    MockClient.return_value = mock_instance
 
-                        await _run(pdf_path, output_path, cli_args, detect_only=True)
+                    await _run(pdf_path, output_path, cli_args, detect_only=True)
 
         assert not output_path.exists()

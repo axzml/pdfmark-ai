@@ -10,7 +10,6 @@ from pathlib import Path
 from pdfmark_ai.client import LLMClient
 from pdfmark_ai.models import Chunk, DocumentStructure, ExtractionResult
 from pdfmark_ai.prompts import EXTRACTION_SYSTEM, build_extraction_prompt
-from pdfmark_ai.image_extractor import build_image_manifest
 
 logger = logging.getLogger(__name__)
 
@@ -25,14 +24,9 @@ async def _process_chunk(
     chunk: Chunk,
     client: LLMClient,
     structure: DocumentStructure,
-    page_images: dict | None = None,
 ) -> ExtractionResult:
     """Process a single chunk: call LLM, return result."""
-    image_manifest = ""
-    if page_images:
-        pages_in_chunk = list(range(chunk.start_page, chunk.end_page + 1))
-        image_manifest = build_image_manifest(page_images, pages_in_chunk)
-    prompt = build_extraction_prompt(chunk, structure, image_manifest)
+    prompt = build_extraction_prompt(chunk, structure)
     markdown = await client.extract(
         images=[p.image_bytes for p in chunk.pages],
         system=EXTRACTION_SYSTEM,
@@ -49,15 +43,15 @@ async def _process_chunk(
     )
 
 
-def _cache_subdir(cache_dir: Path, page_images: dict | None) -> Path:
+def _cache_subdir(cache_dir: Path, crop_mode: bool = False) -> Path:
     """Return a subdirectory for cache entries, separating crop modes."""
-    tag = "crop" if page_images else "plain"
+    tag = "crop" if crop_mode else "plain"
     return cache_dir / tag
 
 
-def _load_chunk_cache(cache_dir: Path, chunk: Chunk, page_images: dict | None = None) -> ExtractionResult | None:
+def _load_chunk_cache(cache_dir: Path, chunk: Chunk, crop_mode: bool = False) -> ExtractionResult | None:
     """Load a chunk result from cache. Returns None if not cached."""
-    sub = _cache_subdir(cache_dir, page_images)
+    sub = _cache_subdir(cache_dir, crop_mode)
     md_path = sub / f"chunk_{chunk.chunk_id:03d}.md"
     tail_path = sub / f"chunk_{chunk.chunk_id:03d}.tail"
     if not md_path.exists():
@@ -77,9 +71,9 @@ def _load_chunk_cache(cache_dir: Path, chunk: Chunk, page_images: dict | None = 
         return None
 
 
-def _save_chunk_cache(cache_dir: Path, result: ExtractionResult, page_images: dict | None = None) -> None:
+def _save_chunk_cache(cache_dir: Path, result: ExtractionResult, crop_mode: bool = False) -> None:
     """Save a chunk result to cache."""
-    sub = _cache_subdir(cache_dir, page_images)
+    sub = _cache_subdir(cache_dir, crop_mode)
     sub.mkdir(parents=True, exist_ok=True)
     (sub / f"chunk_{result.chunk_id:03d}.md").write_text(
         result.markdown, encoding="utf-8"
@@ -94,23 +88,23 @@ async def _process_chapter(
     client: LLMClient,
     structure: DocumentStructure,
     cache_dir: Path | None = None,
-    page_images: dict | None = None,
+    crop_mode: bool = False,
 ) -> list[ExtractionResult]:
     """Process chunks in a chapter serially, propagating tail_summary."""
     results = []
     for chunk in chunks:
         if cache_dir is not None:
-            cached = _load_chunk_cache(cache_dir, chunk, page_images)
+            cached = _load_chunk_cache(cache_dir, chunk, crop_mode)
             if cached is not None:
                 results.append(cached)
                 chunk.context = cached.tail_summary
                 continue
 
         try:
-            result = await _process_chunk(chunk, client, structure, page_images)
+            result = await _process_chunk(chunk, client, structure)
             results.append(result)
             if cache_dir is not None:
-                _save_chunk_cache(cache_dir, result, page_images)
+                _save_chunk_cache(cache_dir, result, crop_mode)
             chunk.context = result.tail_summary
         except Exception as e:
             logger.error(f"Chunk {chunk.chunk_id} (pages {chunk.start_page}-{chunk.end_page}) failed: {e}")
@@ -151,7 +145,7 @@ async def process_all_chunks(
     structure: DocumentStructure,
     max_concurrency: int = 3,
     cache_dir: Path | None = None,
-    page_images: dict | None = None,
+    crop_mode: bool = False,
 ) -> list[ExtractionResult]:
     """Process all chunks with mode-dependent concurrency."""
     if not chunks:
@@ -164,13 +158,13 @@ async def process_all_chunks(
         async def _guarded(chunk):
             async with semaphore:
                 if cache_dir is not None:
-                    cached = _load_chunk_cache(cache_dir, chunk, page_images)
+                    cached = _load_chunk_cache(cache_dir, chunk, crop_mode)
                     if cached is not None:
                         return cached
                 try:
-                    result = await _process_chunk(chunk, client, structure, page_images)
+                    result = await _process_chunk(chunk, client, structure)
                     if cache_dir is not None:
-                        _save_chunk_cache(cache_dir, result, page_images)
+                        _save_chunk_cache(cache_dir, result, crop_mode)
                     return result
                 except Exception as e:
                     logger.error(f"Chunk {chunk.chunk_id} failed: {e}")
@@ -189,7 +183,7 @@ async def process_all_chunks(
 
         async def _guarded_group(group):
             async with semaphore:
-                return await _process_chapter(group, client, structure, cache_dir, page_images)
+                return await _process_chapter(group, client, structure, cache_dir, crop_mode)
 
         group_results = await asyncio.gather(*[_guarded_group(g) for g in groups])
         return [r for group in group_results for r in group]

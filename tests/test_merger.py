@@ -11,14 +11,14 @@ class TestDedupOverlap:
         """Consecutive chunks sharing a paragraph should dedup the second occurrence."""
         results = [
             ExtractionResult(chunk_id=0, start_page=1, end_page=2,
-                             section_title="A", markdown="# A\nShared paragraph\nMore A", tail_summary=""),
+                             section_title="A", markdown="# A\n\nShared paragraph\n\nMore A", tail_summary=""),
             ExtractionResult(chunk_id=1, start_page=2, end_page=3,
-                             section_title="B", markdown="Shared paragraph\nUnique B", tail_summary=""),
+                             section_title="B", markdown="Shared paragraph\n\nUnique B", tail_summary=""),
         ]
         deduped = dedup_overlap(results)
         assert len(deduped) == 2
         # "Shared paragraph" should appear only once (in first chunk)
-        full = "\n".join(r.markdown for r in deduped)
+        full = "\n\n".join(r.markdown for r in deduped)
         count = full.count("Shared paragraph")
         assert count == 1
 
@@ -76,14 +76,43 @@ class TestDedupOverlap:
         """Dedup should be case-insensitive."""
         results = [
             ExtractionResult(chunk_id=0, start_page=1, end_page=2,
-                             section_title="", markdown="Hello World\nContent A", tail_summary=""),
+                             section_title="", markdown="Hello World\n\nContent A", tail_summary=""),
             ExtractionResult(chunk_id=1, start_page=2, end_page=3,
-                             section_title="", markdown="hello world\nContent B", tail_summary=""),
+                             section_title="", markdown="hello world\n\nContent B", tail_summary=""),
+        ]
+        deduped = dedup_overlap(results)
+        full = "\n\n".join(r.markdown for r in deduped)
+        count = full.lower().count("hello world")
+        assert count == 1
+
+    def test_format_diff_dedup(self):
+        """Same content in different formats should be deduped.
+
+        Chunk 1 has plain text, chunk 2 has bold + backtick formatting.
+        Paragraph-level normalization should catch this as a duplicate.
+        """
+        chunk1_content = (
+            "Ashish Vaswani*\tNoam Shazeer*\tNiki Parmar*\tJakob Uszkoreit*\n"
+            "Google Brain\tGoogle Brain\tGoogle Research\tGoogle Research\n"
+            "avaswani@google.com\tnoam@google.com\tnikip@google.com\tusz@google.com"
+        )
+        chunk2_content = (
+            "**Ashish Vaswani***\t**Noam Shazeer***\t**Niki Parmar***\t**Jakob Uszkoreit***\n"
+            "Google Brain\tGoogle Brain\tGoogle Research\tGoogle Research\n"
+            "`avaswani@google.com`\t`noam@google.com`\t`nikip@google.com`\t`usz@google.com`"
+        )
+        results = [
+            ExtractionResult(chunk_id=0, start_page=1, end_page=1,
+                             section_title="", markdown="# Title\n\n" + chunk1_content + "\n\n## Section", tail_summary=""),
+            ExtractionResult(chunk_id=1, start_page=1, end_page=2,
+                             section_title="", markdown=chunk2_content + "\n\nNew content", tail_summary=""),
         ]
         deduped = dedup_overlap(results)
         full = "\n".join(r.markdown for r in deduped)
-        count = full.lower().count("hello world")
-        assert count == 1
+        # "Ashish Vaswani" should appear only once (in chunk 1)
+        assert full.count("Ashish Vaswani") == 1, f"Expected 1, got {full.count('Ashish Vaswani')}"
+        assert full.count("Noam Shazeer") == 1
+        assert "New content" in full
 
 
 class TestCleanBoundaries:

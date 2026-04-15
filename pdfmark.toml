@@ -6,7 +6,7 @@
 # Active provider preset: "kimi" (default), "xiaomi", "qwen", or "anthropic"
 # This selects [providers.<name>] as the default LLM settings.
 # Environment variables (LLM_API_KEY, LLM_BASE_URL, LLM_MODEL) override these.
-active_provider = "kimi"
+active_provider = "xiaomi"
 
 # --- Provider presets ---
 

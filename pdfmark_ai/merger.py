@@ -7,12 +7,84 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from pdfmark_ai.models import DocumentStructure, ExtractionResult
-from pdfmark_ai.image_extractor import CroppedImage, resolve_image_placeholders
 
 
-def _normalize_line(line: str) -> str:
-    """Normalize a line for dedup comparison (case-insensitive, collapsed whitespace)."""
-    return re.sub(r"\s+", " ", line.strip().lower())
+def _normalize_for_dedup(text: str) -> str:
+    """Normalize text for paragraph-level dedup comparison.
+
+    Strips formatting artifacts (bold markers, backticks, table pipes,
+    superscript LaTeX) and collapses whitespace so that the same content
+    in different formats produces the same normalized string.
+    """
+    # Remove bold markers: **text** → text
+    s = re.sub(r"\*\*([^*]+?)\*\*", r"\1", text)
+    # Remove inline code backticks
+    s = re.sub(r"`([^`]+?)`", r"\1", s)
+    # Remove markdown table pipes and separator rows
+    s = re.sub(r"\|", " ", s)
+    s = re.sub(r"[-:]+", " ", s)
+    # Remove LaTeX superscript markers at end of paragraph: $^\dagger$, ^\dagger, \dagger
+    s = re.sub(r"\s*\$?\^?\\[a-zA-Z]+\s*\$?\s*$", "", s)
+    # Collapse whitespace
+    s = re.sub(r"\s+", " ", s).strip().lower()
+    return s
+
+
+def _split_paragraphs(text: str) -> list[str]:
+    """Split markdown text into paragraphs (blocks separated by blank lines).
+
+    Returns list of raw (non-normalized) paragraph strings.
+    Code blocks (``` ... ```) are kept as single units.
+    HTML comments and page annotations are kept as separate paragraphs.
+    Consecutive table rows (lines starting with |) separated by blank lines
+    are merged into a single paragraph, since tables are often rendered with
+    internal blank lines by LLMs.
+    """
+    raw_paragraphs: list[str] = []
+    current: list[str] = []
+    in_code = False
+
+    for line in text.splitlines():
+        stripped = line.strip()
+
+        if stripped.startswith("```"):
+            in_code = not in_code
+            current.append(line)
+            continue
+
+        if in_code:
+            current.append(line)
+            continue
+
+        if not stripped:
+            if current:
+                raw_paragraphs.append("\n".join(current))
+                current = []
+            continue
+
+        current.append(line)
+
+    if current:
+        raw_paragraphs.append("\n".join(current))
+
+    # Merge consecutive table paragraphs
+    merged: list[str] = []
+    table_buffer: list[str] = []
+
+    for para in raw_paragraphs:
+        is_table = para.strip().startswith("|")
+        if is_table:
+            table_buffer.append(para)
+        else:
+            if table_buffer:
+                merged.append("\n\n".join(table_buffer))
+                table_buffer = []
+            merged.append(para)
+
+    if table_buffer:
+        merged.append("\n\n".join(table_buffer))
+
+    return merged
 
 
 def unwrap_nested_images(markdown: str) -> str:
@@ -113,11 +185,18 @@ def fix_math_blocks(markdown: str) -> str:
 
 
 def dedup_overlap(results: list[ExtractionResult]) -> list[ExtractionResult]:
-    """Remove duplicate paragraphs at sliding-window chunk boundaries.
+    """Remove duplicate content at sliding-window chunk boundaries.
 
-    Builds a hash set from the tail of each chunk and skips any lines at the
-    start of the next chunk that match.  Preserves code blocks, HTML comments,
-    and empty lines.
+    Uses paragraph-level comparison: splits each chunk into paragraphs
+    (blocks separated by blank lines), normalizes each paragraph to strip
+    formatting artifacts (bold, backticks, LaTeX superscripts), and skips
+    paragraphs in the current chunk that match any paragraph in the previous
+    chunk. This handles format differences (e.g. bold vs plain, table vs list,
+    multi-column vs single-line) because the normalized content is compared,
+    not the raw formatting.
+
+    Code blocks are always preserved. HTML comments and page annotations
+    are always preserved.
     """
     if len(results) < 2:
         return results
@@ -125,47 +204,70 @@ def dedup_overlap(results: list[ExtractionResult]) -> list[ExtractionResult]:
     deduped = [results[0]]
 
     for i in range(1, len(results)):
-        prev_lines = deduped[-1].markdown.splitlines()
-        curr_lines = results[i].markdown.splitlines()
+        prev_md = deduped[-1].markdown
+        curr_md = results[i].markdown
 
-        # Collect normalized hashes from the tail of the previous chunk
-        tail_hashes: set[str] = set()
-        for line in prev_lines:
-            stripped = line.strip()
-            if stripped and not stripped.startswith("<!--") and not stripped.startswith("```"):
-                tail_hashes.add(_normalize_line(line))
+        # Split both chunks into paragraphs
+        prev_paras = _split_paragraphs(prev_md)
+        curr_paras = _split_paragraphs(curr_md)
 
-        # Filter current chunk: skip lines whose normalized form is in tail_hashes
-        kept: list[str] = []
-        in_code = False
+        # Build a set of normalized paragraphs from the previous chunk
+        prev_norms: set[str] = set()
+        prev_norm_list: list[str] = []  # ordered list for fuzzy matching
+        for p in prev_paras:
+            norm = _normalize_for_dedup(p)
+            if norm:
+                prev_norms.add(norm)
+                prev_norm_list.append(norm)
+
+        # Filter current chunk: keep paragraphs not seen in previous chunk
+        kept_paras: list[str] = []
         skipped = 0
 
-        for line in curr_lines:
-            stripped = line.strip()
-
-            # Always preserve code fences and their content
-            if stripped.startswith("```"):
-                in_code = not in_code
-                kept.append(line)
-                continue
-            if in_code:
-                kept.append(line)
+        for para in curr_paras:
+            # Always preserve code blocks, HTML comments, page annotations,
+            # and figure placeholders ({{FIGURE:N}}) — they are structural markers
+            stripped = para.strip()
+            if stripped.startswith("```") or stripped.startswith("<!--"):
+                kept_paras.append(para)
                 continue
 
-            # Always preserve empty lines and annotations
-            if not stripped or stripped.startswith("<!--"):
-                kept.append(line)
+            if "{{FIGURE:" in para:
+                kept_paras.append(para)
                 continue
 
-            norm = _normalize_line(line)
-            if norm in tail_hashes:
+            norm = _normalize_for_dedup(para)
+            if not norm:
+                kept_paras.append(para)
+                continue
+
+            # Exact match
+            if norm in prev_norms:
+                skipped += 1
+                continue
+
+            # Fuzzy match: token-level Jaccard similarity (threshold 0.85)
+            # Catches LLM extraction errors like "polosukh" vs "polosukhin"
+            norm_tokens = set(norm.split())
+            is_fuzzy_dup = False
+            if len(norm_tokens) >= 5:  # only fuzzy-match substantial paragraphs
+                for prev_norm in prev_norm_list:
+                    prev_tokens = set(prev_norm.split())
+                    shorter, longer = (norm_tokens, prev_tokens) if len(norm_tokens) <= len(prev_tokens) else (prev_tokens, norm_tokens)
+                    overlap = len(shorter & longer)
+                    if overlap / len(shorter) >= 0.85:
+                        is_fuzzy_dup = True
+                        break
+
+            if is_fuzzy_dup:
                 skipped += 1
             else:
-                kept.append(line)
-                tail_hashes.add(norm)  # extend window for multi-line dupes
+                kept_paras.append(para)
+                prev_norms.add(norm)
+                prev_norm_list.append(norm)
 
-        if kept and skipped > 0:
-            new_md = "\n".join(kept).strip()
+        if kept_paras and skipped > 0:
+            new_md = "\n\n".join(kept_paras).strip()
             if new_md:
                 deduped.append(ExtractionResult(
                     chunk_id=results[i].chunk_id,
@@ -257,9 +359,8 @@ def merge_results(
     structure: DocumentStructure,
     source_pdf: Path,
     frontmatter: bool = True,
-    page_images: dict[int, list[CroppedImage]] | None = None,
 ) -> str:
-    """Full merge pipeline: dedup -> clean -> normalize -> resolve images -> frontmatter."""
+    """Full merge pipeline: dedup -> clean -> normalize -> frontmatter."""
     if not results:
         return ""
 
@@ -268,9 +369,6 @@ def merge_results(
     markdown = normalize_headings(markdown)
     markdown = unwrap_nested_images(markdown)
     markdown = fix_math_blocks(markdown)
-
-    if page_images:
-        markdown = resolve_image_placeholders(markdown, page_images)
 
     if frontmatter:
         total_pages = max(r.end_page for r in results)

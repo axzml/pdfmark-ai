@@ -139,6 +139,39 @@ def _parse_structure_response(
         return None
 
 
+def _fill_coverage_gaps(sections: list[Section], total_pages: int) -> list[Section]:
+    """Fill gaps between detected sections so no pages are skipped."""
+    if not sections:
+        return sections
+
+    # Collect all covered pages
+    covered = set()
+    for s in sections:
+        covered.update(range(s.start_page, s.end_page + 1))
+
+    # Find gaps
+    filled: list[Section] = []
+    current = 1
+
+    for section in sorted(sections, key=lambda s: s.start_page):
+        # Gap before this section
+        if section.start_page > current:
+            gap_end = section.start_page - 1
+            filled.append(Section(title="(continued)", start_page=current, end_page=gap_end))
+            covered.update(range(current, gap_end + 1))
+        filled.append(section)
+        current = max(current, section.end_page + 1)
+
+    # Gap after last section
+    if current <= total_pages:
+        filled.append(Section(title="(continued)", start_page=current, end_page=total_pages))
+
+    if len(filled) != len(sections):
+        logger.info(f"Filled coverage gaps: {len(sections)} -> {len(filled)} sections")
+
+    return filled
+
+
 async def detect_structure(
     pdf_path: Path,
     pages: list[PageImage],
@@ -167,6 +200,7 @@ async def detect_structure(
         if toc:
             sections = _parse_outline(toc, total_pages)
             if sections is not None:
+                sections = _fill_coverage_gaps(sections, total_pages)
                 logger.info(f"Structure detected from TOC: {len(sections)} sections")
                 return DocumentStructure(
                     sections=sections, doc_type="unknown", language=language,
@@ -189,6 +223,7 @@ async def detect_structure(
 
             ds = _parse_structure_response(raw, total_pages)
             if ds is not None:
+                ds.sections = _fill_coverage_gaps(ds.sections, total_pages)
                 logger.info(f"Structure detected via LLM scan: {len(ds.sections)} sections")
                 return ds
             logger.info("LLM scan produced no valid structure, falling back")

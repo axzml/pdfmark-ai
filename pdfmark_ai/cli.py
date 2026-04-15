@@ -12,6 +12,8 @@ from typing import Optional
 if sys.platform == "win32":
     import ctypes
     ctypes.windll.kernel32.SetConsoleOutputCP(65001)
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
 import typer
 from rich.console import Console
@@ -32,14 +34,20 @@ from pdfmark_ai.extractor import process_all_chunks
 from pdfmark_ai.merger import merge_results
 from pdfmark_ai.refiner import refine
 from pdfmark_ai.client import LLMClient
-from pdfmark_ai.image_extractor import extract_images
+from pdfmark_ai.image_extractor import (
+    FIGURE_IMG_PATTERN,
+    FIGURE_PATTERN,
+    collect_figure_pages,
+    crop_figures_for_pages,
+    replace_figure_placeholders,
+)
 
 app = typer.Typer(
     name="pdfmark",
     help="Convert PDF files to high-quality Markdown using LLM vision models.",
     no_args_is_help=False,
 )
-console = Console()
+console = Console(legacy_windows=False)
 
 
 def _setup_logging(debug: bool) -> None:
@@ -339,9 +347,7 @@ async def _run(
         console=console,
     )
 
-    import contextlib
-
-    with contextlib.suppress(UnicodeEncodeError), progress:
+    with progress:
         # Stage 1: Render PDF pages
         task_render = progress.add_task("Rendering PDF pages...", total=None)
         pages = render_pdf(
@@ -351,26 +357,6 @@ async def _run(
         )
         progress.update(task_render, completed=True, total=1)
         console.print(f"  Rendered [bold green]{len(pages)}[/bold green] pages.")
-
-        # Stage 1.5: Crop visual regions from pages
-        page_images: dict = {}
-        if cli_args.get("crop_images", False):
-            progress.add_task("Cropping visual regions...", total=None)
-            output_dir = output_path.parent
-            pdf_hash = get_pdf_hash(input_path)
-            page_images = extract_images(
-                pdf_path=input_path,
-                pages=pages,
-                output_dir=output_dir,
-                pdf_hash=pdf_hash,
-                dpi=cfg["dpi"],
-            )
-            total_imgs = sum(len(imgs) for imgs in page_images.values())
-            console.print(
-                f"  Cropped [bold green]{total_imgs}[/bold green] figure regions."
-                if total_imgs
-                else "  No visual regions found."
-            )
 
         # Stage 2: Detect structure
         progress.add_task("Detecting document structure...", total=None)
@@ -426,7 +412,7 @@ async def _run(
             structure=structure,
             max_concurrency=cfg["max_concurrent"],
             cache_dir=extraction_cache,
-            page_images=page_images or None,
+            crop_mode=bool(cli_args.get("crop_images", False)),
         )
 
         progress.update(task_extract, completed=len(chunks))
@@ -441,8 +427,37 @@ async def _run(
             structure=structure,
             source_pdf=input_path,
             frontmatter=cfg["frontmatter"],
-            page_images=page_images or None,
         )
+
+        # Stage 5.5: Crop figures if --crop_images
+        if cli_args.get("crop_images", False):
+            figure_pages = collect_figure_pages(markdown)
+            if figure_pages:
+                progress.add_task("Cropping figure regions...", total=None)
+                output_dir = output_path.parent
+                pdf_hash = get_pdf_hash(input_path)
+                page_images = crop_figures_for_pages(
+                    pdf_path=input_path,
+                    pages=pages,
+                    page_numbers=figure_pages,
+                    output_dir=output_dir,
+                    pdf_hash=pdf_hash,
+                    dpi=cfg["dpi"],
+                )
+                total_imgs = sum(len(imgs) for imgs in page_images.values())
+                markdown = replace_figure_placeholders(markdown, page_images)
+                # Strip any leftover ![...](\{\{FIGURE:N\}\}) from chunk overlap duplicates
+                markdown = FIGURE_IMG_PATTERN.sub("", markdown)
+                console.print(
+                    f"  Cropped [bold green]{total_imgs}[/bold green] figure regions."
+                    if total_imgs
+                    else "  No figures detected by LLM."
+                )
+            else:
+                console.print("  No figure placeholders found in output.")
+        else:
+            # Strip any ![...](\{\{FIGURE:N\}\}) placeholders when crop mode is off
+            markdown = FIGURE_IMG_PATTERN.sub("", markdown)
 
         # Stage 6: Optional refinement
         if cfg["refine"]:
