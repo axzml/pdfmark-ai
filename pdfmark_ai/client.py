@@ -113,7 +113,13 @@ class LLMClient:
                 )
                 if not response.content:
                     raise ValueError("LLM returned empty content")
-                return response.content[0].text
+                # Handle thinking models: find the first TextBlock
+                for block in response.content:
+                    if block.type == "text":
+                        return block.text
+                raise ValueError(
+                    "No text block found in response (only thinking blocks?)"
+                )
             except (APITimeoutError, APIConnectionError) as e:
                 if attempt < MAX_RETRIES - 1:
                     wait = 2 ** (attempt + 1)
@@ -173,7 +179,7 @@ class LLMClient:
         images: list[bytes],
         system: str,
         prompt: str,
-        max_tokens: int = 8192,
+        max_tokens: int = 32768,
     ) -> str:
         """Send images + prompt, return markdown text."""
         async with self._semaphore:

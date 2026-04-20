@@ -28,7 +28,8 @@ class TestLLMClient:
     async def test_extract_success(self):
         mock_client = MagicMock()
         mock_response = MagicMock()
-        mock_response.content = [MagicMock(text="# Result")]
+        text_block = MagicMock(text="# Result", type="text")
+        mock_response.content = [text_block]
         mock_client.messages.create = AsyncMock(return_value=mock_response)
 
         with patch("pdfmark_ai.client.AsyncAnthropic", return_value=mock_client):
@@ -36,6 +37,35 @@ class TestLLMClient:
             result = await client.extract([b"img"], "system prompt", "user prompt")
             assert result == "# Result"
             mock_client.messages.create.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_extract_thinking_model(self):
+        """Thinking models return ThinkingBlock + TextBlock."""
+        mock_client = MagicMock()
+        mock_response = MagicMock()
+        thinking = MagicMock(type="thinking", thinking="let me think...")
+        text_block = MagicMock(type="text", text="# Result from thinking")
+        mock_response.content = [thinking, text_block]
+        mock_client.messages.create = AsyncMock(return_value=mock_response)
+
+        with patch("pdfmark_ai.client.AsyncAnthropic", return_value=mock_client):
+            client = LLMClient(api_key="test", base_url="http://test", model="test-model")
+            result = await client.extract([b"img"], "system prompt", "user prompt")
+            assert result == "# Result from thinking"
+
+    @pytest.mark.asyncio
+    async def test_extract_only_thinking_raises(self):
+        """If response contains only ThinkingBlocks, raise ValueError."""
+        mock_client = MagicMock()
+        mock_response = MagicMock()
+        thinking = MagicMock(type="thinking", thinking="...")
+        mock_response.content = [thinking]
+        mock_client.messages.create = AsyncMock(return_value=mock_response)
+
+        with patch("pdfmark_ai.client.AsyncAnthropic", return_value=mock_client):
+            client = LLMClient(api_key="test", base_url="http://test", model="test-model")
+            with pytest.raises(ValueError, match="No text block"):
+                await client.extract([b"img"], "sys", "usr")
 
     @pytest.mark.asyncio
     async def test_extract_empty_response_raises(self):
@@ -53,7 +83,8 @@ class TestLLMClient:
     async def test_refine_text_only(self):
         mock_client = MagicMock()
         mock_response = MagicMock()
-        mock_response.content = [MagicMock(text="# Refined")]
+        text_block = MagicMock(text="# Refined", type="text")
+        mock_response.content = [text_block]
         mock_client.messages.create = AsyncMock(return_value=mock_response)
 
         with patch("pdfmark_ai.client.AsyncAnthropic", return_value=mock_client):
