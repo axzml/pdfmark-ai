@@ -183,7 +183,7 @@ def main(
         False, "--force", "-f", help="Overwrite existing config files (use with --init).",
     ),
     refine: bool = typer.Option(
-        False, "--refine", help="Run optional LLM global refinement pass.",
+        False, "--refine", help="(deprecated, ignored) Has no effect.",
     ),
     no_cache: bool = typer.Option(
         False, "--no-cache", help="Disable caching of rendered pages and chunks.",
@@ -267,7 +267,7 @@ def main(
     # Build CLI args dict for config loading
     cli_args: dict = {
         "language": lang,
-        "refine": refine,
+        "refine": False,  # deprecated: always disabled
         "no_cache": no_cache,
         "no_frontmatter": no_frontmatter,
         "crop_images": crop_images,
