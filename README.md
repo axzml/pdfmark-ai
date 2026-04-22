@@ -121,13 +121,13 @@ pip install pdfmark-ai
 pdfmark --init
 
 # Step 2: Edit .env — uncomment ONE provider and fill in your API key
-#   e.g. LLM_API_KEY=your-kimi-api-key
+#   e.g. LLM_API_KEY=your-xiaomi-api-key
 
 # Step 3: Run
 pdfmark input.pdf -o output.md
 ```
 
-Default provider is **Kimi** (`kimi-for-coding`). To use a different provider, either edit `.env` to set `LLM_MODEL` / `LLM_BASE_URL`, or change `active_provider` in `pdfmark.toml`.
+Default provider is **Xiaomi MiMo** (`mimo-v2.5`). To use a different provider, either edit `.env` to set `LLM_MODEL` / `LLM_BASE_URL`, or change `active_provider` in `pdfmark.toml`.
 
 > 💡 **Tip:** Configuration files (`.env` and `pdfmark.toml`) are always read from your **current working directory** — not from the package installation directory. Place them alongside your PDF files or in your project root.
 
@@ -148,23 +148,25 @@ You can generate both files with `pdfmark --init`, or create them manually.
 
 ```bash
 # Uncomment ONE provider and add your key:
-LLM_API_KEY=your-kimi-api-key
+LLM_API_KEY=your-xiaomi-api-key
+# LLM_AUTH_TYPE=auth_token
+# LLM_API_KEY=your-kimi-api-key
 # LLM_API_KEY=your-anthropic-api-key
 # LLM_API_KEY=your-qwen-api-key
 
 # Optional: override model or base URL
-# LLM_MODEL=claude-sonnet-4-20250514
-# LLM_BASE_URL=https://api.your-provider.com/v1
+# LLM_MODEL=mimo-v2.5
+# LLM_BASE_URL=https://token-plan-cn.xiaomimimo.com/anthropic
 ```
 
 ### pdfmark.toml (settings)
 
 ```toml
-active_provider = "anthropic"
+active_provider = "xiaomi"
 
-[providers.anthropic]
-base_url = "https://api.anthropic.com"
-model = "claude-sonnet-4-20250514"
+[providers.xiaomi]
+base_url = "https://token-plan-cn.xiaomimimo.com/anthropic"
+model = "mimo-v2.5"
 
 [render]
 dpi = 150
@@ -180,7 +182,7 @@ dir = "~/.cache/pdfmark"
 |----------|-------------------|-------|
 | Anthropic Claude | `anthropic` | Supports Opus 4.6, Sonnet 4.6 and other Claude models. Uses Anthropic Messages API natively. |
 | Kimi (Moonshot) | `kimi` | Anthropic-compatible API |
-| Xiaomi (MiMo) | `xiaomi` | Auth token required |
+| Xiaomi (MiMo) | `xiaomi` | Auth token required. Default provider (mimo-v2.5). |
 | Qwen (Alibaba) | `qwen` | OpenAI-compatible SDK |
 | Any OpenAI-compatible | set `LLM_BASE_URL` | Set `LLM_SDK_TYPE=openai` |
 
@@ -198,7 +200,7 @@ Options:
   -o, --output            Output markdown file path
   --lang                  Document language (e.g. 'en', 'zh', 'auto')
   --crop-images           Extract visual regions from pages as images
-  --refine                Run optional LLM global refinement pass
+  --refine                (deprecated, ignored) Has no effect.
   --no-cache              Disable caching of rendered pages and chunks
   --no-frontmatter        Omit YAML frontmatter from output
   --detect-only           Detect document structure and print sections

@@ -76,11 +76,12 @@ _ENV_TEMPLATE = """\
 # ===================================
 # Fill in your API key below. The active provider is set in pdfmark.toml.
 
+# --- Xiaomi (mimo-v2.5) ---
+# LLM_API_KEY=your-xiaomi-api-key
+# LLM_AUTH_TYPE=auth_token
+
 # --- Kimi (kimi-for-coding) ---
 # LLM_API_KEY=your-kimi-api-key
-
-# --- Xiaomi (mimo-v2-omni) ---
-# LLM_API_KEY=your-xiaomi-api-key
 
 # --- Anthropic (Claude) ---
 # LLM_API_KEY=your-anthropic-api-key
@@ -100,10 +101,10 @@ _TOML_TEMPLATE = """\
 # Non-sensitive defaults (safe to commit).
 # Secrets (API keys) go in .env file.
 
-# Active provider preset: "kimi" (default), "xiaomi", "qwen", or "anthropic"
+# Active provider preset: "xiaomi" (default), "kimi", "qwen", or "anthropic"
 # This selects [providers.<name>] as the default LLM settings.
 # Environment variables (LLM_API_KEY, LLM_BASE_URL, LLM_MODEL) override these.
-active_provider = "kimi"
+active_provider = "xiaomi"
 
 # --- Provider presets ---
 
@@ -125,7 +126,7 @@ max_concurrent = 5
 
 [providers.xiaomi]
 base_url = "https://token-plan-cn.xiaomimimo.com/anthropic"
-model = "mimo-v2-omni"
+model = "mimo-v2.5"
 auth_type = "auth_token"
 sdk_type = "anthropic"
 timeout = 300
