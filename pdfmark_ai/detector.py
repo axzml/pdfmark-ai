@@ -219,7 +219,7 @@ async def detect_structure(
             ]
 
             prompt = build_scan_prompt(total_pages, language)
-            raw = await client.extract(sample_images, SCAN_SYSTEM, prompt, max_tokens=4096)
+            raw = await client.extract(sample_images, SCAN_SYSTEM, prompt, max_tokens=16384)
 
             ds = _parse_structure_response(raw, total_pages)
             if ds is not None:

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 from pathlib import Path
 
 from pdfmark_ai.client import LLMClient
@@ -49,8 +50,11 @@ def _cache_subdir(cache_dir: Path, crop_mode: bool = False) -> Path:
     return cache_dir / tag
 
 
+_PAGE_ANNOTATION_RE = re.compile(r"<!--\s*pages:\s*(\d+)-(\d+)\s*-->")
+
+
 def _load_chunk_cache(cache_dir: Path, chunk: Chunk, crop_mode: bool = False) -> ExtractionResult | None:
-    """Load a chunk result from cache. Returns None if not cached."""
+    """Load a chunk result from cache. Returns None if not cached or page range mismatch."""
     sub = _cache_subdir(cache_dir, crop_mode)
     md_path = sub / f"chunk_{chunk.chunk_id:03d}.md"
     tail_path = sub / f"chunk_{chunk.chunk_id:03d}.tail"
@@ -59,6 +63,18 @@ def _load_chunk_cache(cache_dir: Path, chunk: Chunk, crop_mode: bool = False) ->
     try:
         markdown = md_path.read_text(encoding="utf-8")
         tail = tail_path.read_text(encoding="utf-8") if tail_path.exists() else ""
+
+        # Validate page range matches current chunk (structure may have changed)
+        m = _PAGE_ANNOTATION_RE.search(markdown[:200])
+        if m:
+            cached_start, cached_end = int(m.group(1)), int(m.group(2))
+            if cached_start != chunk.start_page or cached_end != chunk.end_page:
+                logger.debug(
+                    f"Cache miss: chunk {chunk.chunk_id} expected pages "
+                    f"{chunk.start_page}-{chunk.end_page}, cached has {cached_start}-{cached_end}"
+                )
+                return None
+
         return ExtractionResult(
             chunk_id=chunk.chunk_id,
             start_page=chunk.start_page,

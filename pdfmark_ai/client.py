@@ -88,7 +88,7 @@ class LLMClient:
         return content
 
     async def _call_api(
-        self, content: list[dict], system: str, max_tokens: int = 8192
+        self, content: list[dict], system: str, max_tokens: int = 16384
     ) -> str:
         """Call the API with retry logic."""
         if self._request_delay > 0:

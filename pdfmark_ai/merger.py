@@ -185,17 +185,16 @@ def fix_math_blocks(markdown: str) -> str:
 
 
 def dedup_overlap(results: list[ExtractionResult]) -> list[ExtractionResult]:
-    """Remove duplicate content at sliding-window chunk boundaries.
+    """Remove duplicate content at chunk boundaries.
 
-    Uses paragraph-level comparison: splits each chunk into paragraphs
-    (blocks separated by blank lines), normalizes each paragraph to strip
-    formatting artifacts (bold, backticks, LaTeX superscripts), and skips
-    paragraphs in the current chunk that match any paragraph in the previous
-    chunk. This handles format differences (e.g. bold vs plain, table vs list,
-    multi-column vs single-line) because the normalized content is compared,
-    not the raw formatting.
+    Compares each chunk against BOTH the previous deduped chunk AND the
+    previous original chunk.  This handles:
+    - Immediate boundary overlap (deduped prev catches same-text duplicates)
+    - Transitive duplication across 3+ chunks (original prev catches paragraphs
+      that were removed from the deduped version)
+    - Non-overlapping sections with LLM-generated boundary duplication
 
-    Code blocks are always preserved. HTML comments and page annotations
+    Code blocks, HTML comments, page annotations, and figure placeholders
     are always preserved.
     """
     if len(results) < 2:
@@ -204,29 +203,25 @@ def dedup_overlap(results: list[ExtractionResult]) -> list[ExtractionResult]:
     deduped = [results[0]]
 
     for i in range(1, len(results)):
-        prev_md = deduped[-1].markdown
-        curr_md = results[i].markdown
+        curr_paras = _split_paragraphs(results[i].markdown)
 
-        # Split both chunks into paragraphs
-        prev_paras = _split_paragraphs(prev_md)
-        curr_paras = _split_paragraphs(curr_md)
+        # Build seen set from BOTH the deduped previous chunk AND the
+        # original previous chunk.  The deduped chunk catches immediate
+        # boundary overlap; the original chunk catches transitive duplicates
+        # that were removed during the previous dedup pass.
+        seen_norms: set[str] = set()
+        seen_norm_list: list[str] = []
+        for source in [deduped[-1].markdown, results[i - 1].markdown]:
+            for p in _split_paragraphs(source):
+                norm = _normalize_for_dedup(p)
+                if norm:
+                    seen_norms.add(norm)
+                    seen_norm_list.append(norm)
 
-        # Build a set of normalized paragraphs from the previous chunk
-        prev_norms: set[str] = set()
-        prev_norm_list: list[str] = []  # ordered list for fuzzy matching
-        for p in prev_paras:
-            norm = _normalize_for_dedup(p)
-            if norm:
-                prev_norms.add(norm)
-                prev_norm_list.append(norm)
-
-        # Filter current chunk: keep paragraphs not seen in previous chunk
         kept_paras: list[str] = []
         skipped = 0
 
         for para in curr_paras:
-            # Always preserve code blocks, HTML comments, page annotations,
-            # and figure placeholders ({{FIGURE:N}}) — they are structural markers
             stripped = para.strip()
             if stripped.startswith("```") or stripped.startswith("<!--"):
                 kept_paras.append(para)
@@ -241,17 +236,14 @@ def dedup_overlap(results: list[ExtractionResult]) -> list[ExtractionResult]:
                 kept_paras.append(para)
                 continue
 
-            # Exact match
-            if norm in prev_norms:
+            if norm in seen_norms:
                 skipped += 1
                 continue
 
-            # Fuzzy match: token-level Jaccard similarity (threshold 0.85)
-            # Catches LLM extraction errors like "polosukh" vs "polosukhin"
             norm_tokens = set(norm.split())
             is_fuzzy_dup = False
-            if len(norm_tokens) >= 5:  # only fuzzy-match substantial paragraphs
-                for prev_norm in prev_norm_list:
+            if len(norm_tokens) >= 5:
+                for prev_norm in seen_norm_list:
                     prev_tokens = set(prev_norm.split())
                     shorter, longer = (norm_tokens, prev_tokens) if len(norm_tokens) <= len(prev_tokens) else (prev_tokens, norm_tokens)
                     overlap = len(shorter & longer)
@@ -263,8 +255,8 @@ def dedup_overlap(results: list[ExtractionResult]) -> list[ExtractionResult]:
                 skipped += 1
             else:
                 kept_paras.append(para)
-                prev_norms.add(norm)
-                prev_norm_list.append(norm)
+                seen_norms.add(norm)
+                seen_norm_list.append(norm)
 
         if kept_paras and skipped > 0:
             new_md = "\n\n".join(kept_paras).strip()
@@ -277,7 +269,6 @@ def dedup_overlap(results: list[ExtractionResult]) -> list[ExtractionResult]:
                     section_title=results[i].section_title,
                     tail_summary=results[i].tail_summary,
                 ))
-            # else: entire chunk was duplicate, skip it
         else:
             deduped.append(results[i])
 
